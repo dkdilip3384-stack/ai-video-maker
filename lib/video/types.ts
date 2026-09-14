@@ -9,6 +9,7 @@ export type SceneSpec = {
   visualPrompt: string;
   camera: string;
   voiceText?: string;
+  voiceUrl?: string;
   transition?: string;
   referenceAssetUrls?: string[];
 };
@@ -20,6 +21,7 @@ export type VideoProject = {
   language: VideoLanguage;
   title: string;
   scenes: SceneSpec[];
+  musicUrl?: string;
 };
 
 export type GenerateVideoRequest = {
