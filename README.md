@@ -16,46 +16,49 @@ This is **not** a photo slideshow maker. The target output is real motion: scene
 
 ## Current implementation
 
-- Story/prompt input
+- Story/prompt input and automatic scene planner
 - Promo and Film modes
-- Automatic storyboard / scene planner
 - Per-scene duration, visual prompt, camera direction, narration and transition
-- Asset selection UI for logo, screenshots, videos and character references
-- Downloadable project JSON
-- `Generate Moving Video` UI action
-- Pluggable `/api/video/generate` and `/api/video/status` backend
-- Pluggable Tamil/English voice endpoint
-- Health/provider status API
-- GitHub Actions build verification
-- Self-hosted GPU worker contract in `worker/README.md`
+- Direct signed asset upload flow for logos, screenshots, videos and reference media
+- Supabase Storage adapter for browser-to-storage uploads
+- `Generate Moving Video` action with queued/processing/progress/completed status polling
+- Wan/ComfyUI workflow adapter with node mapping and output polling
+- Multi-scene generation instead of first-scene-only generation
+- Optional Tamil/English TTS before the GPU job starts
+- FFmpeg final renderer
+- Per-scene narration mixing
+- Burned-in subtitles, including Tamil font support in the worker image
+- Optional background music mixing
+- Final MP4 assembly
+- Dockerized GPU/render worker
+- GitHub Actions verification for Next.js, Python worker code and the worker Docker image
 
 ## Architecture
 
 ### Web app
 
-Next.js + React handles the mobile UI, storyboard and orchestration.
+Next.js + React handles the mobile UI, storyboard, asset upload and orchestration.
+
+### Asset storage
+
+Selected logo/screens/source clips are uploaded directly from the browser to a dedicated public Supabase Storage bucket using short-lived signed upload URLs. The service-role key stays server-side.
 
 ### GPU video worker
 
-Heavy video generation is intentionally separate from Vercel. The app connects through `AI_VIDEO_API_URL`. This allows a Wan/ComfyUI GPU machine, a future free GPU environment, or a paid provider to be swapped without changing the frontend.
+Heavy video generation is separate from Vercel. The app connects through `AI_VIDEO_API_URL`. The worker queues an exported Wan/ComfyUI API workflow for every scene and polls ComfyUI until each clip is ready.
 
 ### Voice worker
 
-Tamil/English TTS connects through `AI_VOICE_API_URL`.
+Tamil/English TTS connects through `AI_VOICE_API_URL`. If voice is unavailable, the project can still render with subtitles.
 
 ### Final renderer
 
-Planned final stage uses FFmpeg / a rendering worker to concatenate generated scenes, mix narration/music and produce the final MP4.
+The GPU worker uses FFmpeg to concatenate generated scenes, add narration at the correct scene timing, burn subtitles, mix optional background music and produce the final MP4.
 
 ## Environment
 
-Copy `.env.example` and configure the provider URLs when a GPU/voice worker is available.
+Copy `.env.example` and configure the web app provider/storage values. The GPU worker also needs its ComfyUI workflow/node mapping and a public output URL.
 
-## Remaining milestones
+## Still required for a real end-to-end generation
 
-1. Connect a real Wan/ComfyUI GPU worker.
-2. Upload/reference assets so generated characters/products stay consistent.
-3. Generate scene clips and poll job progress.
-4. Generate Tamil/English voice tracks.
-5. Assemble clips + voice + subtitles + music into final MP4.
-6. Deploy web UI and run end-to-end tests.
+The application code path is ready, but a real GPU runtime is still required. To produce actual AI moving clips, deploy the `worker/` service alongside ComfyUI/Wan, export the chosen Wan workflow in API format, map its prompt/dimension/frame/seed/output node IDs, and set the web app `AI_VIDEO_API_URL` to that worker. A voice provider and Supabase bucket are optional integrations that unlock narration and reference uploads.
