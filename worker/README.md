@@ -1,66 +1,54 @@
-# AI Video GPU Worker
+# GPU Video Worker
 
-The web app is intentionally separated from the heavy GPU renderer. This folder defines the worker contract used by `AI_VIDEO_API_URL`.
+This folder is the GPU-side service for AI Video Maker.
 
-## Required HTTP API
+It exposes:
 
-### `POST /generate`
+- `GET /health`
+- `POST /generate`
+- `GET /jobs/{job_id}`
 
-Receives:
+The web app calls this worker through `AI_VIDEO_API_URL` and optional `AI_VIDEO_API_KEY`.
 
-```json
-{
-  "project": {
-    "id": "project-123",
-    "mode": "film",
-    "format": "9:16",
-    "language": "ta",
-    "title": "AI Short Film Project",
-    "scenes": [
-      {
-        "id": "scene-1",
-        "title": "Opening",
-        "durationSeconds": 5,
-        "visualPrompt": "cinematic live-action...",
-        "camera": "slow push-in",
-        "voiceText": "...",
-        "transition": "match cut"
-      }
-    ]
-  }
-}
+## Run directly
+
+```bash
+cd worker
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-Returns a job object:
+## Run with Docker
 
-```json
-{
-  "id": "job-123",
-  "provider": "wan-comfyui",
-  "status": "queued",
-  "progress": 0
-}
+```bash
+docker build -t ai-video-worker .
+docker run --rm -p 8000:8000 \
+  -e COMFYUI_URL=http://host.docker.internal:8188 \
+  -e WORKER_API_KEY=change-me \
+  ai-video-worker
 ```
 
-### `GET /jobs/:id`
+## Environment
 
-Returns the same job shape. When finished:
+- `WORKER_API_KEY` optional bearer token expected from the web app
+- `COMFYUI_URL` defaults to `http://127.0.0.1:8188`
+- `PUBLIC_OUTPUT_BASE_URL` reserved for generated MP4 URLs
 
-```json
-{
-  "id": "job-123",
-  "provider": "wan-comfyui",
-  "status": "completed",
-  "progress": 100,
-  "outputUrl": "https://.../final.mp4"
-}
+## Web app connection
+
+Set these on the deployed Next.js app:
+
+```text
+AI_VIDEO_API_URL=https://your-gpu-worker.example.com
+AI_VIDEO_API_KEY=the-same-worker-api-key
 ```
 
-## Intended free/self-hosted stack
+## Current integration state
 
-- ComfyUI as the workflow engine
-- Wan-family image-to-video / text-to-video workflow
-- FFmpeg to concatenate scenes, mix audio and burn subtitles
-- Local disk or S3-compatible storage for generated MP4 files
+The worker validates projects, accepts generation jobs, checks ComfyUI connectivity, and forwards scene data toward ComfyUI. It deliberately does not fake a completed MP4.
 
-The frontend does not need to change when the worker implementation changes; only `AI_VIDEO_API_URL` changes.
+The remaining GPU-specific step is to export a working Wan video workflow from the actual ComfyUI installation, map its node IDs/inputs into `submit_to_comfyui()`, watch ComfyUI history until the clip finishes, then expose the produced MP4 URL.
+
+Once that workflow is connected, the existing web app `Generate Moving Video` flow can start real jobs without redesigning the frontend.
