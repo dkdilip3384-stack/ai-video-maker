@@ -10,7 +10,12 @@ export async function POST(request: Request) {
       );
     }
 
-    const body = (await request.json()) as { fileName?: string; projectId?: string };
+    const body = (await request.json()) as {
+      fileName?: string;
+      projectId?: string;
+      contentType?: string;
+      size?: number;
+    };
     if (!body.fileName) {
       return NextResponse.json({ error: 'fileName is required.' }, { status: 400 });
     }
@@ -18,6 +23,8 @@ export async function POST(request: Request) {
     const signed = await createSignedAssetUpload({
       fileName: body.fileName,
       projectId: body.projectId,
+      contentType: body.contentType,
+      size: body.size,
     });
 
     return NextResponse.json(signed);
