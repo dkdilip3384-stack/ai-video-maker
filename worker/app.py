@@ -11,9 +11,10 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from assembly import render_manifest
 from comfy_adapter import check_history, load_workflow, queue_workflow
 
-app = FastAPI(title="AI Video Maker GPU Worker", version="0.2.0")
+app = FastAPI(title="AI Video Maker GPU Worker", version="0.3.0")
 
 WORKER_API_KEY = os.getenv("WORKER_API_KEY")
 COMFYUI_URL = os.getenv("COMFYUI_URL", "http://127.0.0.1:8188").rstrip("/")
@@ -48,6 +49,26 @@ class GenerateRequest(BaseModel):
     sceneId: Optional[str] = None
 
 
+class RenderScene(BaseModel):
+    id: str
+    order: int
+    durationSeconds: int
+    videoUrl: Optional[str] = None
+    voiceUrl: Optional[str] = None
+    subtitle: str = ""
+    transition: str = "cut"
+
+
+class RenderManifest(BaseModel):
+    projectId: str
+    title: str
+    format: Literal["9:16", "16:9", "1:1"]
+    totalDurationSeconds: int
+    scenes: list[RenderScene]
+    musicUrl: Optional[str] = None
+    outputFileName: str
+
+
 class Job(BaseModel):
     id: str
     provider: str = "comfyui-wan"
@@ -61,6 +82,7 @@ class Job(BaseModel):
 
 
 JOBS: Dict[str, Job] = {}
+RENDER_JOBS: Dict[str, Job] = {}
 
 
 def authorize(authorization: Optional[str]) -> None:
@@ -156,6 +178,28 @@ async def run_generation(job_id: str, payload: GenerateRequest, scene: SceneSpec
         job.updatedAt = time.time()
 
 
+async def run_render(job_id: str, manifest: RenderManifest) -> None:
+    job = RENDER_JOBS[job_id]
+    job.status = "processing"
+    job.progress = 10
+    job.updatedAt = time.time()
+
+    try:
+        job.progress = 30
+        job.updatedAt = time.time()
+        output_url = await render_manifest(manifest.model_dump(), job_id)
+        job.progress = 95
+        job.updatedAt = time.time()
+        job.outputUrl = output_url
+        job.status = "completed"
+        job.progress = 100
+        job.updatedAt = time.time()
+    except Exception as exc:
+        job.status = "failed"
+        job.error = str(exc)
+        job.updatedAt = time.time()
+
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
     comfy_reachable = False
@@ -170,12 +214,13 @@ async def health() -> dict[str, Any]:
     return {
         "ok": True,
         "worker": "gpu-video-worker",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "provider": "comfyui-wan",
         "comfyuiUrl": COMFYUI_URL,
         "comfyuiReachable": comfy_reachable,
         "detail": detail,
-        "activeJobs": sum(1 for job in JOBS.values() if job.status in ("queued", "processing")),
+        "activeGenerationJobs": sum(1 for job in JOBS.values() if job.status in ("queued", "processing")),
+        "activeRenderJobs": sum(1 for job in RENDER_JOBS.values() if job.status in ("queued", "processing")),
     }
 
 
@@ -202,4 +247,34 @@ async def get_job(
     job = JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.post("/render", response_model=Job)
+async def render(
+    manifest: RenderManifest,
+    authorization: Optional[str] = Header(default=None),
+) -> Job:
+    authorize(authorization)
+    if not manifest.scenes:
+        raise HTTPException(status_code=400, detail="Render manifest has no scenes")
+    if any(not scene.videoUrl for scene in manifest.scenes):
+        raise HTTPException(status_code=400, detail="Every scene must contain videoUrl before final render")
+
+    job_id = f"render_{uuid.uuid4().hex[:16]}"
+    job = Job(id=job_id, provider="ffmpeg", status="queued", metadata={"projectId": manifest.projectId})
+    RENDER_JOBS[job_id] = job
+    asyncio.create_task(run_render(job_id, manifest))
+    return job
+
+
+@app.get("/renders/{job_id}", response_model=Job)
+async def get_render(
+    job_id: str,
+    authorization: Optional[str] = Header(default=None),
+) -> Job:
+    authorize(authorization)
+    job = RENDER_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Render job not found")
     return job
