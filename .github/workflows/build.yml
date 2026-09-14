@@ -30,4 +30,4 @@ jobs:
           python-version: '3.12'
 
       - name: Check GPU worker syntax
-        run: python -m py_compile worker/app.py
+        run: python -m py_compile worker/app.py worker/comfy_adapter.py
