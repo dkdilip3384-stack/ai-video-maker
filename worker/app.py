@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from assembly import render_manifest
 from comfy_adapter import check_history, load_workflow, queue_workflow
 
-app = FastAPI(title="AI Video Maker GPU Worker", version="0.4.0")
+app = FastAPI(title="AI Video Maker GPU Worker", version="0.5.0")
 
 WORKER_API_KEY = os.getenv("WORKER_API_KEY")
 COMFYUI_URL = os.getenv("COMFYUI_URL", "http://127.0.0.1:8188").rstrip("/")
@@ -31,6 +31,7 @@ class SceneSpec(BaseModel):
     visualPrompt: str
     camera: str = ""
     voiceText: Optional[str] = None
+    voiceUrl: Optional[str] = None
     transition: Optional[str] = None
     referenceAssetUrls: list[str] = []
 
@@ -42,6 +43,7 @@ class VideoProject(BaseModel):
     language: Literal["ta", "en", "mix"]
     title: str
     scenes: list[SceneSpec]
+    musicUrl: Optional[str] = None
 
 
 class GenerateRequest(BaseModel):
@@ -216,11 +218,13 @@ async def run_generation(job_id: str, payload: GenerateRequest, scenes: list[Sce
                     "order": index + 1,
                     "durationSeconds": scene.durationSeconds,
                     "videoUrl": clip_urls[index],
+                    "voiceUrl": scene.voiceUrl,
                     "subtitle": scene.voiceText or "",
                     "transition": scene.transition or "cut",
                 }
                 for index, scene in enumerate(scenes)
             ],
+            "musicUrl": payload.project.musicUrl,
             "outputFileName": f"{payload.project.id}.mp4",
         }
         output_url = await render_manifest(manifest, job_id)
@@ -242,8 +246,6 @@ async def run_render(job_id: str, manifest: RenderManifest) -> None:
     job.updatedAt = time.time()
 
     try:
-        job.progress = 30
-        job.updatedAt = time.time()
         output_url = await render_manifest(manifest.model_dump(), job_id)
         job.outputUrl = output_url
         job.status = "completed"
@@ -269,7 +271,7 @@ async def health() -> dict[str, Any]:
     return {
         "ok": True,
         "worker": "gpu-video-worker",
-        "version": "0.4.0",
+        "version": "0.5.0",
         "provider": "comfyui-wan",
         "comfyuiUrl": COMFYUI_URL,
         "comfyuiReachable": comfy_reachable,
