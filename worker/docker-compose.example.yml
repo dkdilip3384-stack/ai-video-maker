@@ -1,0 +1,25 @@
+services:
+  ai-video-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      WORKER_API_KEY: change-me
+      COMFYUI_URL: http://host.docker.internal:8188
+      COMFYUI_WORKFLOW_PATH: /app/workflow_api.json
+      COMFYUI_PROMPT_NODE_ID: ""
+      COMFYUI_WIDTH_NODE_ID: ""
+      COMFYUI_HEIGHT_NODE_ID: ""
+      COMFYUI_FRAMES_NODE_ID: ""
+      COMFYUI_SEED_NODE_ID: ""
+      COMFYUI_OUTPUT_NODE_ID: ""
+      PUBLIC_OUTPUT_BASE_URL: ""
+      OUTPUT_DIR: /data/output
+      VIDEO_FPS: "16"
+      COMFYUI_POLL_SECONDS: "3"
+      JOB_TIMEOUT_SECONDS: "1800"
+    volumes:
+      - ./workflow_api.json:/app/workflow_api.json:ro
+      - ./output:/data/output
