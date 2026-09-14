@@ -207,7 +207,7 @@ export async function synthesizeZVoice(text: string, onProgress?: ProgressCallba
     ])),
   };
   if (Object.keys(config.speaker_id_map ?? {}).length) {
-    feeds.sid = new ort.Tensor('int64', BigInt64Array.from([0n]));
+    feeds.sid = new ort.Tensor('int64', BigInt64Array.from([BigInt(0)]));
   }
   const result = await session.run(feeds);
   const pcm = result.output.data as Float32Array;
