@@ -14,359 +14,98 @@ function dimensions(format: string) {
   return { width: 540, height: 960 };
 }
 
-function easeOut(t: number) {
-  return 1 - Math.pow(1 - Math.max(0, Math.min(1, t)), 3);
+function clamp01(v: number) { return Math.max(0, Math.min(1, v)); }
+function easeOut(v: number) { const t = clamp01(v); return 1 - Math.pow(1 - t, 3); }
+function easeInOut(v: number) { const t = clamp01(v); return t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2; }
+
+function rr(ctx: CanvasRenderingContext2D, x:number,y:number,w:number,h:number,r:number) {
+  ctx.beginPath(); ctx.roundRect(x,y,w,h,Math.min(r,w/2,h/2));
 }
 
-function easeInOut(t: number) {
-  const x = Math.max(0, Math.min(1, t));
-  return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
-}
-
-function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
-  const radius = Math.min(r, w / 2, h / 2);
-  ctx.beginPath();
-  ctx.roundRect(x, y, w, h, radius);
-}
-
-function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, maxLines = 3) {
-  const words = text.split(/\s+/).filter(Boolean);
-  const lines: string[] = [];
-  let line = '';
+function wrap(ctx: CanvasRenderingContext2D, text:string, maxWidth:number, maxLines=2) {
+  const words = text.split(/\s+/).filter(Boolean); const lines:string[]=[]; let line='';
   for (const word of words) {
     const test = line ? `${line} ${word}` : word;
-    if (ctx.measureText(test).width > maxWidth && line) {
-      lines.push(line);
-      line = word;
-      if (lines.length >= maxLines) break;
-    } else line = test;
+    if (ctx.measureText(test).width > maxWidth && line) { lines.push(line); line=word; if(lines.length>=maxLines) break; }
+    else line=test;
   }
-  if (line && lines.length < maxLines) lines.push(line);
+  if (line && lines.length<maxLines) lines.push(line);
   return lines;
 }
 
 async function loadMedia(files: File[]) {
-  const selected = files.filter((file) => file.type.startsWith('image/') || file.type.startsWith('video/')).slice(0, 10);
-  const media: LoadedMedia[] = [];
-
-  for (const file of selected) {
-    const url = URL.createObjectURL(file);
+  const chosen = files.filter(f => f.type.startsWith('image/') || f.type.startsWith('video/')).slice(0, 10);
+  const out:LoadedMedia[]=[];
+  for (const file of chosen) {
+    const url=URL.createObjectURL(file);
     if (file.type.startsWith('video/')) {
-      const video = document.createElement('video');
-      video.src = url;
-      video.muted = true;
-      video.loop = true;
-      video.playsInline = true;
-      video.preload = 'auto';
-      await new Promise<void>((resolve) => {
-        const done = () => resolve();
-        video.onloadeddata = done;
-        video.onerror = done;
-        setTimeout(done, 3500);
-      });
-      if (video.videoWidth > 0) media.push({ kind: 'video', element: video, url });
-      else URL.revokeObjectURL(url);
+      const v=document.createElement('video'); v.src=url; v.muted=true; v.loop=true; v.playsInline=true; v.preload='auto';
+      await new Promise<void>(resolve=>{ const done=()=>resolve(); v.onloadeddata=done; v.onerror=done; setTimeout(done,3000); });
+      if(v.videoWidth) out.push({kind:'video',element:v,url}); else URL.revokeObjectURL(url);
     } else {
-      const image = new Image();
-      image.decoding = 'async';
-      await new Promise<void>((resolve) => {
-        image.onload = () => resolve();
-        image.onerror = () => resolve();
-        image.src = url;
-      });
-      if (image.naturalWidth > 0) media.push({ kind: 'image', element: image, url });
-      else URL.revokeObjectURL(url);
+      const img=new Image(); img.decoding='async';
+      await new Promise<void>(resolve=>{ img.onload=()=>resolve(); img.onerror=()=>resolve(); img.src=url; });
+      if(img.naturalWidth) out.push({kind:'image',element:img,url}); else URL.revokeObjectURL(url);
     }
   }
-  return media;
+  return out;
 }
 
-function mediaSize(media: LoadedMedia) {
-  return media.kind === 'video'
-    ? { width: media.element.videoWidth, height: media.element.videoHeight }
-    : { width: media.element.naturalWidth, height: media.element.naturalHeight };
+function sizeOf(m:LoadedMedia){ return m.kind==='video'?{w:m.element.videoWidth,h:m.element.videoHeight}:{w:m.element.naturalWidth,h:m.element.naturalHeight}; }
+function drawCover(ctx:CanvasRenderingContext2D,m:LoadedMedia,x:number,y:number,w:number,h:number,p:number,zoom=.08){
+  const s=sizeOf(m); if(!s.w||!s.h)return; const scale=Math.max(w/s.w,h/s.h)*(1.02+easeInOut(p)*zoom);
+  const dw=s.w*scale, dh=s.h*scale; const px=(p-.5)*w*.08, py=(.5-p)*h*.04;
+  ctx.drawImage(m.element,x+(w-dw)/2+px,y+(h-dh)/2+py,dw,dh);
 }
 
-function drawMediaCover(
-  ctx: CanvasRenderingContext2D,
-  media: LoadedMedia,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  progress: number,
-  zoomStrength = 0.08,
-) {
-  const source = media.element;
-  const size = mediaSize(media);
-  if (!size.width || !size.height) return;
-  const scale = Math.max(width / size.width, height / size.height) * (1.02 + easeInOut(progress) * zoomStrength);
-  const drawW = size.width * scale;
-  const drawH = size.height * scale;
-  const panX = (progress - 0.5) * width * 0.09;
-  const panY = (0.5 - progress) * height * 0.05;
-  ctx.drawImage(source, x + (width - drawW) / 2 + panX, y + (height - drawH) / 2 + panY, drawW, drawH);
-}
-
-function drawPhone(
-  ctx: CanvasRenderingContext2D,
-  media: LoadedMedia,
-  cx: number,
-  cy: number,
-  phoneW: number,
-  phoneH: number,
-  progress: number,
-  variant: number,
-) {
-  const enter = easeOut(Math.min(1, progress * 4));
-  const exit = easeInOut(Math.max(0, (progress - 0.84) / 0.16));
-  const scale = (0.76 + enter * 0.24) * (1 - exit * 0.08);
-  const direction = variant % 2 === 0 ? 1 : -1;
-  const xOffset = direction * (1 - enter) * phoneW * 0.75 + direction * exit * phoneW * 0.18;
-  const rotation = direction * ((1 - enter) * 0.12 - progress * 0.025);
-
-  ctx.save();
-  ctx.translate(cx + xOffset, cy);
-  ctx.rotate(rotation);
-  ctx.scale(scale, scale);
-
-  ctx.shadowColor = 'rgba(0,0,0,.48)';
-  ctx.shadowBlur = phoneW * 0.12;
-  ctx.shadowOffsetY = phoneW * 0.055;
-  ctx.fillStyle = '#05070c';
-  roundRect(ctx, -phoneW / 2, -phoneH / 2, phoneW, phoneH, phoneW * 0.11);
-  ctx.fill();
-  ctx.shadowColor = 'transparent';
-
-  const bezel = phoneW * 0.035;
-  const screenX = -phoneW / 2 + bezel;
-  const screenY = -phoneH / 2 + bezel;
-  const screenW = phoneW - bezel * 2;
-  const screenH = phoneH - bezel * 2;
-  ctx.save();
-  roundRect(ctx, screenX, screenY, screenW, screenH, phoneW * 0.085);
-  ctx.clip();
-  ctx.fillStyle = '#101522';
-  ctx.fillRect(screenX, screenY, screenW, screenH);
-  drawMediaCover(ctx, media, screenX, screenY, screenW, screenH, progress, 0.12);
-  ctx.restore();
-
-  ctx.fillStyle = 'rgba(255,255,255,.9)';
-  roundRect(ctx, -phoneW * 0.13, -phoneH / 2 + phoneW * 0.05, phoneW * 0.26, phoneW * 0.035, phoneW * 0.02);
-  ctx.fill();
-
-  const tapPhase = (progress * 3.2) % 1;
-  if (progress > 0.2 && progress < 0.86) {
-    const pulse = 1 - tapPhase;
-    const px = phoneW * (variant % 2 ? -0.12 : 0.14);
-    const py = phoneH * (variant % 3 === 0 ? 0.1 : -0.06);
-    ctx.strokeStyle = `rgba(125,145,255,${0.75 * pulse})`;
-    ctx.lineWidth = Math.max(2, phoneW * 0.012);
-    ctx.beginPath();
-    ctx.arc(px, py, phoneW * (0.035 + tapPhase * 0.12), 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.fillStyle = 'rgba(255,255,255,.95)';
-    ctx.beginPath();
-    ctx.arc(px, py, phoneW * 0.022, 0, Math.PI * 2);
-    ctx.fill();
-  }
+function drawPhone(ctx:CanvasRenderingContext2D,m:LoadedMedia,cx:number,cy:number,pw:number,ph:number,p:number,index:number){
+  const enter=easeOut(Math.min(1,p*4)); const exit=easeInOut(Math.max(0,(p-.86)/.14)); const dir=index%2?1:-1;
+  ctx.save(); ctx.translate(cx+dir*(1-enter)*pw*.8,cy); ctx.rotate(dir*((1-enter)*.10-p*.018)); ctx.scale(.78+enter*.22-exit*.06,.78+enter*.22-exit*.06);
+  ctx.shadowColor='rgba(0,0,0,.55)';ctx.shadowBlur=pw*.12;ctx.shadowOffsetY=pw*.05;ctx.fillStyle='#05070d';rr(ctx,-pw/2,-ph/2,pw,ph,pw*.11);ctx.fill();ctx.shadowColor='transparent';
+  const b=pw*.034,sx=-pw/2+b,sy=-ph/2+b,sw=pw-b*2,sh=ph-b*2;ctx.save();rr(ctx,sx,sy,sw,sh,pw*.08);ctx.clip();ctx.fillStyle='#111622';ctx.fillRect(sx,sy,sw,sh);drawCover(ctx,m,sx,sy,sw,sh,p,.12);ctx.restore();
+  ctx.fillStyle='rgba(255,255,255,.9)';rr(ctx,-pw*.13,-ph/2+pw*.05,pw*.26,pw*.035,pw*.02);ctx.fill();
+  if(p>.18&&p<.84){const t=(p*3.4)%1, pulse=1-t,px=pw*(index%2?.14:-.12),py=ph*(index%3===0?.08:-.06);ctx.strokeStyle=`rgba(135,154,255,${.8*pulse})`;ctx.lineWidth=Math.max(2,pw*.012);ctx.beginPath();ctx.arc(px,py,pw*(.035+t*.11),0,Math.PI*2);ctx.stroke();ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(px,py,pw*.02,0,Math.PI*2);ctx.fill();}
   ctx.restore();
 }
 
-function drawFloatingCard(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, progress: number, label: string) {
-  const enter = easeOut(Math.min(1, Math.max(0, progress - 0.12) * 4));
-  ctx.save();
-  ctx.globalAlpha = enter;
-  ctx.translate(x, y + (1 - enter) * 34);
-  ctx.shadowColor = 'rgba(0,0,0,.3)';
-  ctx.shadowBlur = 24;
-  ctx.fillStyle = 'rgba(20,26,44,.88)';
-  roundRect(ctx, 0, 0, w, w * 0.28, w * 0.06);
-  ctx.fill();
-  ctx.shadowColor = 'transparent';
-  ctx.fillStyle = '#ffffff';
-  ctx.font = `700 ${Math.max(14, Math.round(w * 0.07))}px Arial`;
-  ctx.fillText(label.slice(0, 24), w * 0.08, w * 0.17);
-  ctx.restore();
-}
+export default function BrowserVideoExporter({project,assets}:Props){
+  const [exporting,setExporting]=useState(false); const [status,setStatus]=useState(''); const [voice,setVoice]=useState<File|null>(null);
 
-export default function BrowserVideoExporter({ project, assets }: Props) {
-  const [exporting, setExporting] = useState(false);
-  const [status, setStatus] = useState('');
-
-  async function exportVideo() {
-    if (exporting) return;
-    if (typeof MediaRecorder === 'undefined') {
-      setStatus('இந்த browser video export support பண்ணவில்லை. Chrome-ல் try பண்ணுங்க.');
-      return;
-    }
-    if (!assets.length) {
-      setStatus('Logo / app screenshots / screen recording add பண்ணி export செய்யுங்கள்.');
-      return;
-    }
-
-    setExporting(true);
-    setStatus('Preparing professional promo render…');
-    let media: LoadedMedia[] = [];
-
-    try {
-      const { width, height } = dimensions(project.format);
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) throw new Error('Canvas is unavailable.');
-
-      media = await loadMedia(assets);
-      if (!media.length) throw new Error('Selected assets could not be loaded.');
-      await Promise.all(media.filter((item) => item.kind === 'video').map(async (item) => {
-        try { await item.element.play(); } catch { /* browser may still allow frame drawing */ }
-      }));
-
-      const fps = 30;
-      const stream = canvas.captureStream(fps);
-      const mimeCandidates = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
-      const mimeType = mimeCandidates.find((type) => MediaRecorder.isTypeSupported(type)) || '';
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType, videoBitsPerSecond: 7_000_000 } : undefined);
-      const chunks: BlobPart[] = [];
-      recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
-      const done = new Promise<void>((resolve, reject) => {
-        recorder.onstop = () => resolve();
-        recorder.onerror = () => reject(new Error('Browser video export failed.'));
-      });
-
-      recorder.start(500);
-      const totalMs = Math.max(1000, project.totalDuration * 1000);
-      const startedAt = performance.now();
-
-      await new Promise<void>((resolve) => {
-        const render = () => {
-          const elapsed = Math.min(totalMs, performance.now() - startedAt);
-          const timeSec = elapsed / 1000;
-          let cursor = 0;
-          let scene = project.scenes[project.scenes.length - 1];
-          let sceneProgress = 1;
-          for (const candidate of project.scenes) {
-            if (timeSec < cursor + candidate.duration) {
-              scene = candidate;
-              sceneProgress = Math.max(0, Math.min(1, (timeSec - cursor) / Math.max(0.1, candidate.duration)));
-              break;
-            }
-            cursor += candidate.duration;
-          }
-
-          const overall = elapsed / totalMs;
-          const current = media[(scene.order - 1) % media.length];
-          const next = media[scene.order % media.length];
-          const transition = easeInOut(Math.max(0, (sceneProgress - 0.86) / 0.14));
-
-          ctx.fillStyle = '#070b17';
-          ctx.fillRect(0, 0, width, height);
-
-          // Moving, blurred media backdrop creates depth instead of a flat slideshow.
-          ctx.save();
-          ctx.globalAlpha = 0.36 * (1 - transition);
-          ctx.filter = `blur(${Math.max(12, width * 0.03)}px) saturate(1.25)`;
-          drawMediaCover(ctx, current, -width * 0.08, -height * 0.08, width * 1.16, height * 1.16, sceneProgress, 0.16);
-          ctx.restore();
-          if (transition > 0 && next) {
-            ctx.save();
-            ctx.globalAlpha = 0.32 * transition;
-            ctx.filter = `blur(${Math.max(12, width * 0.03)}px) saturate(1.2)`;
-            drawMediaCover(ctx, next, -width * 0.08, -height * 0.08, width * 1.16, height * 1.16, transition, 0.1);
-            ctx.restore();
-          }
-
-          const vignette = ctx.createLinearGradient(0, 0, 0, height);
-          vignette.addColorStop(0, 'rgba(4,7,17,.18)');
-          vignette.addColorStop(0.58, 'rgba(4,7,17,.06)');
-          vignette.addColorStop(1, 'rgba(4,7,17,.84)');
-          ctx.fillStyle = vignette;
-          ctx.fillRect(0, 0, width, height);
-
-          const isPortrait = height >= width;
-          const phoneW = isPortrait ? width * 0.55 : height * 0.34;
-          const phoneH = phoneW * 2.02;
-          const phoneCx = isPortrait ? width * 0.56 : width * 0.66;
-          const phoneCy = isPortrait ? height * 0.45 : height * 0.52;
-          drawPhone(ctx, current, phoneCx, phoneCy, phoneW, phoneH, sceneProgress, scene.order);
-
-          if (isPortrait) {
-            drawFloatingCard(ctx, width * 0.055, height * 0.19, width * 0.42, sceneProgress, scene.title);
-          } else {
-            drawFloatingCard(ctx, width * 0.07, height * 0.27, width * 0.31, sceneProgress, scene.title);
-          }
-
-          // Kinetic text enters independently from the phone.
-          const textEnter = easeOut(Math.min(1, sceneProgress * 5));
-          const textExit = easeInOut(Math.max(0, (sceneProgress - 0.82) / 0.18));
-          const textAlpha = textEnter * (1 - textExit);
-          const margin = width * 0.065;
-          const titleY = isPortrait ? height * 0.76 : height * 0.42;
-          ctx.save();
-          ctx.globalAlpha = textAlpha;
-          ctx.translate((1 - textEnter) * -width * 0.08, 0);
-          ctx.fillStyle = 'rgba(174,185,255,.92)';
-          ctx.font = `700 ${Math.max(13, Math.round(width * 0.027))}px Arial`;
-          ctx.fillText(`0${scene.order}  •  ${scene.transition || 'MOTION'}`.toUpperCase(), margin, titleY - width * 0.055);
-          ctx.fillStyle = '#fff';
-          ctx.font = `800 ${Math.max(26, Math.round(width * (isPortrait ? 0.072 : 0.052)))}px Arial`;
-          const title = scene.onScreenText || scene.title;
-          const lines = wrapText(ctx, title, isPortrait ? width * 0.86 : width * 0.42, 2);
-          lines.forEach((line, index) => ctx.fillText(line, margin, titleY + index * width * (isPortrait ? 0.085 : 0.062)));
-          ctx.restore();
-
-          // Animated accent line / progress.
-          ctx.fillStyle = 'rgba(255,255,255,.16)';
-          ctx.fillRect(margin, height - height * 0.035, width - margin * 2, Math.max(4, height * 0.005));
-          ctx.fillStyle = '#9da9ff';
-          ctx.fillRect(margin, height - height * 0.035, (width - margin * 2) * overall, Math.max(4, height * 0.005));
-
-          // Short white flash between scenes for a real edit feel.
-          if (transition > 0.72) {
-            ctx.fillStyle = `rgba(255,255,255,${Math.sin((transition - 0.72) / 0.28 * Math.PI) * 0.16})`;
-            ctx.fillRect(0, 0, width, height);
-          }
-
-          setStatus(`Rendering professional promo… ${Math.round(overall * 100)}%`);
-          if (elapsed >= totalMs) { resolve(); return; }
-          requestAnimationFrame(render);
-        };
-        requestAnimationFrame(render);
-      });
-
-      recorder.stop();
-      await done;
-      const blob = new Blob(chunks, { type: mimeType || 'video/webm' });
-      if (!blob.size) throw new Error('Rendered video is empty.');
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = `ai-video-maker-promo-${Date.now()}.webm`;
-      anchor.click();
-      setTimeout(() => URL.revokeObjectURL(url), 30_000);
-      setStatus('Professional motion promo exported successfully.');
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Browser video export failed.');
-    } finally {
-      media.forEach((item) => {
-        if (item.kind === 'video') item.element.pause();
-        URL.revokeObjectURL(item.url);
-      });
-      setExporting(false);
-    }
+  async function exportVideo(){
+    if(exporting)return; if(typeof MediaRecorder==='undefined'){setStatus('Chrome browser-ல் try பண்ணுங்க.');return;} if(!assets.length){setStatus('Logo / screenshots / screen recording add பண்ணுங்க.');return;}
+    setExporting(true); setStatus('Preparing clean promo render…'); let media:LoadedMedia[]=[]; let voiceUrl=''; let audio:HTMLAudioElement|null=null; let audioContext:AudioContext|null=null;
+    try{
+      const {width,height}=dimensions(project.format); const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;const ctx=canvas.getContext('2d');if(!ctx)throw new Error('Canvas unavailable.');
+      media=await loadMedia(assets);if(!media.length)throw new Error('Selected visual assets could not be loaded.');
+      await Promise.all(media.filter(m=>m.kind==='video').map(async m=>{try{await m.element.play();}catch{}}));
+      const canvasStream=canvas.captureStream(30); const outputStream=new MediaStream(canvasStream.getVideoTracks());
+      if(voice){
+        voiceUrl=URL.createObjectURL(voice); audio=document.createElement('audio');audio.src=voiceUrl;audio.preload='auto';audio.loop=false;
+        await new Promise<void>(resolve=>{const done=()=>resolve();audio!.oncanplay=done;audio!.onerror=done;setTimeout(done,2500);});
+        audioContext=new AudioContext(); await audioContext.resume(); const src=audioContext.createMediaElementSource(audio); const dest=audioContext.createMediaStreamDestination(); src.connect(dest); dest.stream.getAudioTracks().forEach(t=>outputStream.addTrack(t));
+      }
+      const mime=['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'].find(t=>MediaRecorder.isTypeSupported(t))||'';
+      const recorder=new MediaRecorder(outputStream,mime?{mimeType:mime,videoBitsPerSecond:7_000_000,audioBitsPerSecond:160_000}:undefined);const chunks:BlobPart[]=[];recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};const done=new Promise<void>((resolve,reject)=>{recorder.onstop=()=>resolve();recorder.onerror=()=>reject(new Error('Export failed.'));});
+      recorder.start(500); if(audio){audio.currentTime=0;try{await audio.play();}catch{setStatus('Voice file autoplay blocked; tap export again.');}}
+      const totalMs=Math.max(1000,project.totalDuration*1000),start=performance.now();
+      await new Promise<void>(resolve=>{const render=()=>{
+        const elapsed=Math.min(totalMs,performance.now()-start),sec=elapsed/1000;let cursor=0,scene=project.scenes[project.scenes.length-1],sp=1;
+        for(const s of project.scenes){if(sec<cursor+s.duration){scene=s;sp=clamp01((sec-cursor)/Math.max(.1,s.duration));break;}cursor+=s.duration;}
+        const overall=elapsed/totalMs,current=media[(scene.order-1)%media.length],next=media[scene.order%media.length],tr=easeInOut(Math.max(0,(sp-.87)/.13));
+        ctx.fillStyle='#070b16';ctx.fillRect(0,0,width,height);
+        ctx.save();ctx.globalAlpha=.34*(1-tr);ctx.filter=`blur(${Math.max(12,width*.03)}px) saturate(1.2)`;drawCover(ctx,current,-width*.08,-height*.08,width*1.16,height*1.16,sp,.15);ctx.restore();
+        if(tr&&next){ctx.save();ctx.globalAlpha=.30*tr;ctx.filter=`blur(${Math.max(12,width*.03)}px)`;drawCover(ctx,next,-width*.08,-height*.08,width*1.16,height*1.16,tr,.10);ctx.restore();}
+        const grad=ctx.createLinearGradient(0,0,0,height);grad.addColorStop(0,'rgba(5,8,18,.12)');grad.addColorStop(.58,'rgba(5,8,18,.04)');grad.addColorStop(1,'rgba(5,8,18,.82)');ctx.fillStyle=grad;ctx.fillRect(0,0,width,height);
+        const portrait=height>=width,pw=portrait?width*.56:height*.34,ph=pw*2.02,cx=portrait?width*.52:width*.66,cy=portrait?height*.43:height*.52;drawPhone(ctx,current,cx,cy,pw,ph,sp,scene.order);
+        // Clean title only: no Hook/Problem/Product side labels.
+        const enter=easeOut(Math.min(1,sp*5)),exit=easeInOut(Math.max(0,(sp-.83)/.17)),alpha=enter*(1-exit),margin=width*.07,ty=portrait?height*.77:height*.46;
+        ctx.save();ctx.globalAlpha=alpha;ctx.translate((1-enter)*-width*.07,0);ctx.fillStyle='rgba(186,196,255,.95)';ctx.font=`700 ${Math.max(13,Math.round(width*.028))}px Arial`;ctx.fillText(`0${scene.order} / 0${project.scenes.length}`,margin,ty-width*.05);ctx.fillStyle='#fff';ctx.font=`800 ${Math.max(27,Math.round(width*(portrait?.073:.052)))}px Arial`;const lines=wrap(ctx,scene.onScreenText||scene.title,portrait?width*.86:width*.42,2);lines.forEach((l,i)=>ctx.fillText(l,margin,ty+i*width*.082));ctx.restore();
+        ctx.fillStyle='rgba(255,255,255,.16)';ctx.fillRect(margin,height-height*.032,width-margin*2,Math.max(4,height*.0045));ctx.fillStyle='#aebaff';ctx.fillRect(margin,height-height*.032,(width-margin*2)*overall,Math.max(4,height*.0045));
+        setStatus(`Rendering promo… ${Math.round(overall*100)}%${voice?' • voice included':''}`);if(elapsed>=totalMs){resolve();return;}requestAnimationFrame(render);
+      };requestAnimationFrame(render);});
+      if(audio)audio.pause();recorder.stop();await done;const blob=new Blob(chunks,{type:mime||'video/webm'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`ai-promo-${Date.now()}.webm`;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);setStatus(voice?'Promo exported with voice audio.':'Promo exported. Voice file add பண்ணினா audio-வும் வரும்.');
+    }catch(e){setStatus(e instanceof Error?e.message:'Export failed.');}finally{media.forEach(m=>URL.revokeObjectURL(m.url));if(voiceUrl)URL.revokeObjectURL(voiceUrl);if(audioContext)audioContext.close().catch(()=>{});setExporting(false);}
   }
 
-  return (
-    <div className="browserExportBox">
-      <div>
-        <strong>Professional app promo export</strong>
-        <p>Photo slideshow இல்ல. App screens phone frame-க்குள் move/zoom, tap pulse, kinetic text, depth background, transitions உடன் render ஆகும். Screen recording add பண்ணினா அதையும் motion source-ஆ பயன்படுத்தும்.</p>
-      </div>
-      <button className="secondary" type="button" disabled={exporting} onClick={exportVideo}>
-        {exporting ? 'Rendering promo…' : 'Export Professional Promo'}
-      </button>
-      {status && <div className="generationStatus">{status}</div>}
-    </div>
-  );
+  return <div className="browserExportBox"><div><strong>Professional app promo export</strong><p>Phone motion, UI zoom/pan, tap highlight, clean transitions. Voice வேண்டும்னா கீழே audio add பண்ணுங்க.</p></div><label style={{display:'grid',gap:8,width:'100%'}}><span style={{fontWeight:700}}>Voice / Audio (optional)</span><input type="file" accept="audio/*,video/*" onChange={e=>setVoice(e.target.files?.[0]||null)}/><small>{voice?`Selected: ${voice.name}`:'Phone voice recorder-ல் Tamil narration record செய்து இங்கே select பண்ணலாம்.'}</small></label><button className="secondary" type="button" disabled={exporting} onClick={exportVideo}>{exporting?'Rendering…':'Export Professional Promo'}</button>{status&&<div className="generationStatus">{status}</div>}</div>;
 }
