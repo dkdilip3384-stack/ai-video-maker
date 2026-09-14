@@ -30,4 +30,7 @@ jobs:
           python-version: '3.12'
 
       - name: Check GPU worker syntax
-        run: python -m py_compile worker/app.py worker/comfy_adapter.py
+        run: python -m py_compile worker/app.py worker/comfy_adapter.py worker/assembly.py
+
+      - name: Validate worker Dockerfile
+        run: docker build -t ai-video-maker-worker ./worker
