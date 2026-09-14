@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random
 import time
 import uuid
 from typing import Any, Dict, Literal, Optional
@@ -10,11 +11,14 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="AI Video Maker GPU Worker", version="0.1.0")
+from comfy_adapter import check_history, load_workflow, queue_workflow
+
+app = FastAPI(title="AI Video Maker GPU Worker", version="0.2.0")
 
 WORKER_API_KEY = os.getenv("WORKER_API_KEY")
 COMFYUI_URL = os.getenv("COMFYUI_URL", "http://127.0.0.1:8188").rstrip("/")
-PUBLIC_OUTPUT_BASE_URL = os.getenv("PUBLIC_OUTPUT_BASE_URL", "").rstrip("/")
+POLL_SECONDS = max(1.0, float(os.getenv("COMFYUI_POLL_SECONDS", "3")))
+JOB_TIMEOUT_SECONDS = max(60, int(os.getenv("JOB_TIMEOUT_SECONDS", "1800")))
 
 JobStatus = Literal["queued", "processing", "completed", "failed"]
 
@@ -86,51 +90,65 @@ def dimensions(fmt: str) -> tuple[int, int]:
     return 720, 1280
 
 
-async def submit_to_comfyui(job_id: str, payload: GenerateRequest, scene: SceneSpec) -> None:
+async def run_generation(job_id: str, payload: GenerateRequest, scene: SceneSpec) -> None:
     job = JOBS[job_id]
     job.status = "processing"
     job.progress = 5
     job.updatedAt = time.time()
 
     width, height = dimensions(payload.project.format)
-    prompt = f"{scene.visualPrompt}. Camera: {scene.camera}. Real continuous motion, no slideshow."
-
-    # This is a provider-neutral payload. The next integration step maps it to the
-    # exact Wan/ComfyUI workflow JSON exported from the chosen GPU installation.
-    request_body = {
-        "client_id": job_id,
-        "prompt": {
-            "_meta": {
-                "scene_id": scene.id,
-                "positive_prompt": prompt,
-                "duration_seconds": scene.durationSeconds,
-                "width": width,
-                "height": height,
-                "reference_assets": scene.referenceAssetUrls,
-            }
-        },
-    }
+    prompt = f"{scene.visualPrompt}. Camera: {scene.camera}. Real continuous motion, natural movement, no slideshow."
+    seed = random.randint(1, 2_147_483_647)
 
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(f"{COMFYUI_URL}/prompt", json=request_body)
-            if response.status_code >= 400:
-                raise RuntimeError(
-                    f"ComfyUI returned {response.status_code}: {response.text[:300]}"
-                )
-            data = response.json()
-
-        job.metadata["comfyPromptId"] = data.get("prompt_id")
-        job.progress = 15
-        job.updatedAt = time.time()
-
-        # Until the concrete Wan workflow/output watcher is wired, keep the job
-        # explicit instead of pretending an MP4 was generated.
-        job.status = "failed"
-        job.error = (
-            "ComfyUI accepted the request, but a concrete Wan workflow JSON and output watcher "
-            "must be configured before MP4 generation can complete."
+        workflow = load_workflow(
+            prompt=prompt,
+            width=width,
+            height=height,
+            duration_seconds=scene.durationSeconds,
+            seed=seed,
         )
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            prompt_id = await queue_workflow(client, workflow, job_id)
+            job.metadata.update(
+                {
+                    "sceneId": scene.id,
+                    "comfyPromptId": prompt_id,
+                    "seed": seed,
+                    "width": width,
+                    "height": height,
+                }
+            )
+            job.progress = 12
+            job.updatedAt = time.time()
+
+            started = time.time()
+            while time.time() - started < JOB_TIMEOUT_SECONDS:
+                status, output_url, error = await check_history(client, prompt_id)
+
+                if status == "completed" and output_url:
+                    job.status = "completed"
+                    job.progress = 100
+                    job.outputUrl = output_url
+                    job.error = None
+                    job.updatedAt = time.time()
+                    return
+
+                if status == "failed":
+                    job.status = "failed"
+                    job.error = error or "ComfyUI generation failed"
+                    job.updatedAt = time.time()
+                    return
+
+                elapsed = time.time() - started
+                ratio = min(0.88, elapsed / max(120.0, scene.durationSeconds * 40.0))
+                job.progress = max(job.progress, 12 + int(ratio * 82))
+                job.updatedAt = time.time()
+                await asyncio.sleep(POLL_SECONDS)
+
+        job.status = "failed"
+        job.error = f"Generation timed out after {JOB_TIMEOUT_SECONDS} seconds"
         job.updatedAt = time.time()
     except Exception as exc:
         job.status = "failed"
@@ -152,10 +170,12 @@ async def health() -> dict[str, Any]:
     return {
         "ok": True,
         "worker": "gpu-video-worker",
+        "version": "0.2.0",
         "provider": "comfyui-wan",
         "comfyuiUrl": COMFYUI_URL,
         "comfyuiReachable": comfy_reachable,
         "detail": detail,
+        "activeJobs": sum(1 for job in JOBS.values() if job.status in ("queued", "processing")),
     }
 
 
@@ -169,7 +189,7 @@ async def generate(
     job_id = f"vid_{uuid.uuid4().hex[:16]}"
     job = Job(id=job_id, status="queued", metadata={"sceneId": scene.id})
     JOBS[job_id] = job
-    asyncio.create_task(submit_to_comfyui(job_id, payload, scene))
+    asyncio.create_task(run_generation(job_id, payload, scene))
     return job
 
 
