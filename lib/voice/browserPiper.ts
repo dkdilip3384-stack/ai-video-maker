@@ -166,6 +166,20 @@ async function getSession(voiceId: string, onProgress?: ProgressCallback) {
   return value;
 }
 
+function normalizePcm(samples: Float32Array) {
+  let peak = 0;
+  for (const sample of samples) peak = Math.max(peak, Math.abs(sample));
+  if (peak < 0.0001) return samples;
+  const targetPeak = 0.94;
+  const gain = Math.min(2.4, targetPeak / peak);
+  if (gain <= 1.02) return samples;
+  const normalized = new Float32Array(samples.length);
+  for (let i = 0; i < samples.length; i += 1) {
+    normalized[i] = Math.max(-0.98, Math.min(0.98, samples[i] * gain));
+  }
+  return normalized;
+}
+
 function floatPcmToWav(samples: Float32Array, sampleRate: number) {
   const headerLength = 44;
   const buffer = new ArrayBuffer(headerLength + samples.length * 2);
@@ -201,15 +215,15 @@ export async function synthesizeZVoice(text: string, onProgress?: ProgressCallba
     input: new ort.Tensor('int64', BigInt64Array.from(phonemeIds, (value) => BigInt(value)), [1, phonemeIds.length]),
     input_lengths: new ort.Tensor('int64', BigInt64Array.from([BigInt(phonemeIds.length)])),
     scales: new ort.Tensor('float32', Float32Array.from([
-      config.inference?.noise_scale ?? 0.667,
-      0.88,
-      config.inference?.noise_w ?? 0.8,
+      0.52,
+      0.76,
+      0.62,
     ])),
   };
   if (Object.keys(config.speaker_id_map ?? {}).length) {
     feeds.sid = new ort.Tensor('int64', BigInt64Array.from([BigInt(0)]));
   }
   const result = await session.run(feeds);
-  const pcm = result.output.data as Float32Array;
+  const pcm = normalizePcm(result.output.data as Float32Array);
   return new Blob([floatPcmToWav(pcm, config.audio?.sample_rate || 22050)], { type: 'audio/wav' });
 }
