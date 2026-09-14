@@ -19,6 +19,14 @@ type ProviderJob = {
   error?: string;
 };
 
+type UploadedAsset = {
+  name: string;
+  type: string;
+  size: number;
+  url: string;
+  path: string;
+};
+
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export default function HomePage() {
@@ -28,16 +36,19 @@ export default function HomePage() {
   const [format, setFormat] = useState('9:16');
   const [duration, setDuration] = useState(30);
   const [assets, setAssets] = useState<File[]>([]);
+  const [uploadedAssets, setUploadedAssets] = useState<UploadedAsset[]>([]);
   const [project, setProject] = useState<StoryboardProject | null>(null);
   const [generation, setGeneration] = useState<GenerationState>({ loading: false, message: '' });
 
   const assetSummary = useMemo(() => {
     if (!assets.length) return 'No assets added yet';
-    return `${assets.length} file${assets.length > 1 ? 's' : ''} ready`;
-  }, [assets]);
+    if (uploadedAssets.length === assets.length) return `${assets.length} file${assets.length > 1 ? 's' : ''} uploaded`;
+    return `${assets.length} file${assets.length > 1 ? 's' : ''} selected`;
+  }, [assets, uploadedAssets]);
 
   function handleFiles(event: ChangeEvent<HTMLInputElement>) {
     setAssets(Array.from(event.target.files || []));
+    setUploadedAssets([]);
   }
 
   function generateProject() {
@@ -51,7 +62,10 @@ export default function HomePage() {
     if (!project) return;
     const payload = {
       ...project,
-      assets: assets.map((file) => ({ name: file.name, type: file.type, size: file.size })),
+      assets: assets.map((file) => {
+        const uploaded = uploadedAssets.find((item) => item.name === file.name && item.size === file.size);
+        return { name: file.name, type: file.type, size: file.size, url: uploaded?.url };
+      }),
       createdAt: new Date().toISOString(),
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -61,6 +75,52 @@ export default function HomePage() {
     anchor.download = 'ai-video-project.json';
     anchor.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function uploadSelectedAssets(projectId: string) {
+    if (!assets.length) return [] as UploadedAsset[];
+    if (uploadedAssets.length === assets.length) return uploadedAssets;
+
+    const completed: UploadedAsset[] = [];
+    for (let index = 0; index < assets.length; index += 1) {
+      const file = assets[index];
+      setGeneration({
+        loading: true,
+        message: `Uploading asset ${index + 1}/${assets.length}: ${file.name}`,
+        progress: Math.round((index / Math.max(1, assets.length)) * 15),
+      });
+
+      const signResponse = await fetch('/api/assets/sign-upload', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ fileName: file.name, projectId }),
+      });
+      const signed = await signResponse.json();
+      if (!signResponse.ok) {
+        throw new Error(signed?.error || 'Unable to prepare asset upload.');
+      }
+
+      const uploadResponse = await fetch(signed.uploadUrl, {
+        method: 'PUT',
+        headers: { 'content-type': file.type || 'application/octet-stream' },
+        body: file,
+      });
+      if (!uploadResponse.ok) {
+        const text = await uploadResponse.text();
+        throw new Error(`Asset upload failed: ${uploadResponse.status} ${text.slice(0, 180)}`);
+      }
+
+      completed.push({
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        url: signed.publicUrl,
+        path: signed.path,
+      });
+    }
+
+    setUploadedAssets(completed);
+    return completed;
   }
 
   async function pollJob(jobId: string) {
@@ -97,7 +157,7 @@ export default function HomePage() {
 
       setGeneration({
         loading: true,
-        message: job.status === 'queued' ? 'Waiting for GPU…' : `Generating moving video… ${progress}%`,
+        message: job.status === 'queued' ? 'Waiting for GPU…' : `Generating full video… ${progress}%`,
         jobId,
         progress,
       });
@@ -108,26 +168,33 @@ export default function HomePage() {
 
   async function generateMovingVideo() {
     if (!project) return;
-    setGeneration({ loading: true, message: 'Starting moving-video generation…', progress: 0 });
+    setGeneration({ loading: true, message: 'Preparing project…', progress: 0 });
 
-    const providerProject = {
-      id: `project-${Date.now()}`,
-      mode: project.mode,
-      format: project.format,
-      language: project.language,
-      title: project.title,
-      scenes: project.scenes.map((scene) => ({
-        id: scene.id,
-        title: scene.title,
-        durationSeconds: scene.duration,
-        visualPrompt: scene.visualPrompt,
-        camera: scene.camera,
-        voiceText: scene.narration,
-        transition: scene.transition,
-      })),
-    };
+    const projectId = `project-${Date.now()}`;
 
     try {
+      const remoteAssets = await uploadSelectedAssets(projectId);
+      const assetUrls = remoteAssets.map((item) => item.url);
+
+      const providerProject = {
+        id: projectId,
+        mode: project.mode,
+        format: project.format,
+        language: project.language,
+        title: project.title,
+        scenes: project.scenes.map((scene) => ({
+          id: scene.id,
+          title: scene.title,
+          durationSeconds: scene.duration,
+          visualPrompt: scene.visualPrompt,
+          camera: scene.camera,
+          voiceText: scene.narration,
+          transition: scene.transition,
+          referenceAssetUrls: assetUrls,
+        })),
+      };
+
+      setGeneration({ loading: true, message: 'Starting GPU generation…', progress: 15 });
       const response = await fetch('/api/video/generate', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -148,7 +215,7 @@ export default function HomePage() {
         return;
       }
 
-      setGeneration({ loading: true, message: 'GPU job queued…', jobId: data.id, progress: data.progress || 0 });
+      setGeneration({ loading: true, message: 'GPU job queued…', jobId: data.id, progress: Math.max(15, data.progress || 0) });
       await pollJob(data.id);
     } catch (error) {
       setGeneration({
@@ -161,7 +228,7 @@ export default function HomePage() {
   return (
     <main className="shell">
       <section className="hero">
-        <div className="badge">AI VIDEO MAKER • BUILD 03</div>
+        <div className="badge">AI VIDEO MAKER • BUILD 04</div>
         <h1>Story to real moving video</h1>
         <p>
           Build a proper motion-video project from your story, logo, app screens and references.
@@ -230,12 +297,15 @@ export default function HomePage() {
 
         {assets.length > 0 && (
           <div className="assetList">
-            {assets.map((file) => (
-              <div className="assetChip" key={`${file.name}-${file.size}`}>
-                <span>{file.type.startsWith('video/') ? 'VIDEO' : 'IMAGE'}</span>
-                {file.name}
-              </div>
-            ))}
+            {assets.map((file) => {
+              const uploaded = uploadedAssets.some((item) => item.name === file.name && item.size === file.size);
+              return (
+                <div className="assetChip" key={`${file.name}-${file.size}`}>
+                  <span>{uploaded ? 'UPLOADED' : file.type.startsWith('video/') ? 'VIDEO' : 'IMAGE'}</span>
+                  {file.name}
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -291,7 +361,7 @@ export default function HomePage() {
           <div className="generationBox">
             <div>
               <strong>Moving-video engine</strong>
-              <p>Send the scene to the connected GPU video provider and follow generation progress automatically.</p>
+              <p>Upload reference assets, generate every motion scene, then prepare the final video automatically.</p>
             </div>
             <button className="primary" type="button" disabled={generation.loading} onClick={generateMovingVideo}>
               {generation.loading ? 'Generating…' : 'Generate Moving Video'}
