@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import type { StoryboardProject } from '../lib/storyboard';
+import { synthesizeZVoice, Z_VOICE_LABEL } from '../lib/voice/browserPiper';
 
 type Props = { project: StoryboardProject; assets: File[] };
 type LoadedMedia =
@@ -69,27 +70,65 @@ function drawPhone(ctx:CanvasRenderingContext2D,m:LoadedMedia,cx:number,cy:numbe
 }
 
 export default function BrowserVideoExporter({project,assets}:Props){
-  const [exporting,setExporting]=useState(false); const [status,setStatus]=useState(''); const [voice,setVoice]=useState<File|null>(null);
+  const [exporting,setExporting]=useState(false);
+  const [status,setStatus]=useState('');
 
   async function exportVideo(){
-    if(exporting)return; if(typeof MediaRecorder==='undefined'){setStatus('Chrome browser-ல் try பண்ணுங்க.');return;} if(!assets.length){setStatus('Logo / screenshots / screen recording add பண்ணுங்க.');return;}
-    setExporting(true); setStatus('Preparing clean promo render…'); let media:LoadedMedia[]=[]; let voiceUrl=''; let audio:HTMLAudioElement|null=null; let audioContext:AudioContext|null=null;
+    if(exporting)return;
+    if(typeof MediaRecorder==='undefined'){setStatus('Chrome browser-ல் try பண்ணுங்க.');return;}
+    if(!assets.length){setStatus('Logo / screenshots / screen recording add பண்ணுங்க.');return;}
+
+    setExporting(true);
+    setStatus('Visual assets prepare ஆகுது…');
+    let media:LoadedMedia[]=[];
+    let audioContext:AudioContext|null=null;
+    let voiceSource:AudioBufferSourceNode|null=null;
+
     try{
-      const {width,height}=dimensions(project.format); const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;const ctx=canvas.getContext('2d');if(!ctx)throw new Error('Canvas unavailable.');
+      const {width,height}=dimensions(project.format);
+      const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
+      const ctx=canvas.getContext('2d');if(!ctx)throw new Error('Canvas unavailable.');
       media=await loadMedia(assets);if(!media.length)throw new Error('Selected visual assets could not be loaded.');
       await Promise.all(media.filter(m=>m.kind==='video').map(async m=>{try{await m.element.play();}catch{}}));
-      const canvasStream=canvas.captureStream(30); const outputStream=new MediaStream(canvasStream.getVideoTracks());
-      if(voice){
-        voiceUrl=URL.createObjectURL(voice); audio=document.createElement('audio');audio.src=voiceUrl;audio.preload='auto';audio.loop=false;
-        await new Promise<void>(resolve=>{const done=()=>resolve();audio!.oncanplay=done;audio!.onerror=done;setTimeout(done,2500);});
-        audioContext=new AudioContext(); await audioContext.resume(); const src=audioContext.createMediaElementSource(audio); const dest=audioContext.createMediaStreamDestination(); src.connect(dest); dest.stream.getAudioTracks().forEach(t=>outputStream.addTrack(t));
-      }
+
+      const canvasStream=canvas.captureStream(30);
+      const outputStream=new MediaStream(canvasStream.getVideoTracks());
+
+      const narrationScript=project.scenes
+        .map(scene=>scene.narration.trim())
+        .filter(Boolean)
+        .join(' ... ');
+
+      setStatus(`${Z_VOICE_LABEL} prepare ஆகுது… first time model download ஆகலாம்.`);
+      audioContext=new AudioContext();
+      await audioContext.resume();
+      const voiceBlob=await synthesizeZVoice(narrationScript, progress=>{
+        const pct=progress.total?Math.round(progress.loaded*100/progress.total):0;
+        setStatus(pct?`Z Voice model download… ${pct}%`:'Z Voice model download ஆகுது…');
+      });
+      const voiceBuffer=await audioContext.decodeAudioData(await voiceBlob.arrayBuffer());
+      const destination=audioContext.createMediaStreamDestination();
+      const gain=audioContext.createGain();
+      gain.gain.value=1.18;
+      voiceSource=audioContext.createBufferSource();
+      voiceSource.buffer=voiceBuffer;
+      voiceSource.connect(gain);
+      gain.connect(destination);
+      destination.stream.getAudioTracks().forEach(track=>outputStream.addTrack(track));
+
       const mime=['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'].find(t=>MediaRecorder.isTypeSupported(t))||'';
-      const recorder=new MediaRecorder(outputStream,mime?{mimeType:mime,videoBitsPerSecond:7_000_000,audioBitsPerSecond:160_000}:undefined);const chunks:BlobPart[]=[];recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};const done=new Promise<void>((resolve,reject)=>{recorder.onstop=()=>resolve();recorder.onerror=()=>reject(new Error('Export failed.'));});
-      recorder.start(500); if(audio){audio.currentTime=0;try{await audio.play();}catch{setStatus('Voice file autoplay blocked; tap export again.');}}
+      const recorder=new MediaRecorder(outputStream,mime?{mimeType:mime,videoBitsPerSecond:7_000_000,audioBitsPerSecond:160_000}:undefined);
+      const chunks:BlobPart[]=[];
+      recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+      const done=new Promise<void>((resolve,reject)=>{recorder.onstop=()=>resolve();recorder.onerror=()=>reject(new Error('Export failed.'));});
+
+      recorder.start(500);
+      voiceSource.start(0);
       const totalMs=Math.max(1000,project.totalDuration*1000),start=performance.now();
+
       await new Promise<void>(resolve=>{const render=()=>{
-        const elapsed=Math.min(totalMs,performance.now()-start),sec=elapsed/1000;let cursor=0,scene=project.scenes[project.scenes.length-1],sp=1;
+        const elapsed=Math.min(totalMs,performance.now()-start),sec=elapsed/1000;
+        let cursor=0,scene=project.scenes[project.scenes.length-1],sp=1;
         for(const s of project.scenes){if(sec<cursor+s.duration){scene=s;sp=clamp01((sec-cursor)/Math.max(.1,s.duration));break;}cursor+=s.duration;}
         const overall=elapsed/totalMs,current=media[(scene.order-1)%media.length],next=media[scene.order%media.length],tr=easeInOut(Math.max(0,(sp-.87)/.13));
         ctx.fillStyle='#070b16';ctx.fillRect(0,0,width,height);
@@ -97,15 +136,37 @@ export default function BrowserVideoExporter({project,assets}:Props){
         if(tr&&next){ctx.save();ctx.globalAlpha=.30*tr;ctx.filter=`blur(${Math.max(12,width*.03)}px)`;drawCover(ctx,next,-width*.08,-height*.08,width*1.16,height*1.16,tr,.10);ctx.restore();}
         const grad=ctx.createLinearGradient(0,0,0,height);grad.addColorStop(0,'rgba(5,8,18,.12)');grad.addColorStop(.58,'rgba(5,8,18,.04)');grad.addColorStop(1,'rgba(5,8,18,.82)');ctx.fillStyle=grad;ctx.fillRect(0,0,width,height);
         const portrait=height>=width,pw=portrait?width*.56:height*.34,ph=pw*2.02,cx=portrait?width*.52:width*.66,cy=portrait?height*.43:height*.52;drawPhone(ctx,current,cx,cy,pw,ph,sp,scene.order);
-        // Clean title only: no Hook/Problem/Product side labels.
         const enter=easeOut(Math.min(1,sp*5)),exit=easeInOut(Math.max(0,(sp-.83)/.17)),alpha=enter*(1-exit),margin=width*.07,ty=portrait?height*.77:height*.46;
         ctx.save();ctx.globalAlpha=alpha;ctx.translate((1-enter)*-width*.07,0);ctx.fillStyle='rgba(186,196,255,.95)';ctx.font=`700 ${Math.max(13,Math.round(width*.028))}px Arial`;ctx.fillText(`0${scene.order} / 0${project.scenes.length}`,margin,ty-width*.05);ctx.fillStyle='#fff';ctx.font=`800 ${Math.max(27,Math.round(width*(portrait?.073:.052)))}px Arial`;const lines=wrap(ctx,scene.onScreenText||scene.title,portrait?width*.86:width*.42,2);lines.forEach((l,i)=>ctx.fillText(l,margin,ty+i*width*.082));ctx.restore();
         ctx.fillStyle='rgba(255,255,255,.16)';ctx.fillRect(margin,height-height*.032,width-margin*2,Math.max(4,height*.0045));ctx.fillStyle='#aebaff';ctx.fillRect(margin,height-height*.032,(width-margin*2)*overall,Math.max(4,height*.0045));
-        setStatus(`Rendering promo… ${Math.round(overall*100)}%${voice?' • voice included':''}`);if(elapsed>=totalMs){resolve();return;}requestAnimationFrame(render);
+        setStatus(`Professional promo render… ${Math.round(overall*100)}% • Z Voice included`);
+        if(elapsed>=totalMs){resolve();return;}requestAnimationFrame(render);
       };requestAnimationFrame(render);});
-      if(audio)audio.pause();recorder.stop();await done;const blob=new Blob(chunks,{type:mime||'video/webm'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`ai-promo-${Date.now()}.webm`;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);setStatus(voice?'Promo exported with voice audio.':'Promo exported. Voice file add பண்ணினா audio-வும் வரும்.');
-    }catch(e){setStatus(e instanceof Error?e.message:'Export failed.');}finally{media.forEach(m=>URL.revokeObjectURL(m.url));if(voiceUrl)URL.revokeObjectURL(voiceUrl);if(audioContext)audioContext.close().catch(()=>{});setExporting(false);}
+
+      try{voiceSource.stop();}catch{}
+      recorder.stop();
+      await done;
+      const blob=new Blob(chunks,{type:mime||'video/webm'});
+      const url=URL.createObjectURL(blob);
+      const anchor=document.createElement('a');anchor.href=url;anchor.download=`ai-promo-z-voice-${Date.now()}.webm`;anchor.click();
+      setTimeout(()=>URL.revokeObjectURL(url),30000);
+      setStatus('Promo exported successfully • automatic Tamil Z Voice included.');
+    }catch(e){
+      setStatus(e instanceof Error?`Export error: ${e.message}`:'Export failed.');
+    }finally{
+      media.forEach(m=>URL.revokeObjectURL(m.url));
+      if(audioContext)audioContext.close().catch(()=>{});
+      setExporting(false);
+    }
   }
 
-  return <div className="browserExportBox"><div><strong>Professional app promo export</strong><p>Phone motion, UI zoom/pan, tap highlight, clean transitions. Voice வேண்டும்னா கீழே audio add பண்ணுங்க.</p></div><label style={{display:'grid',gap:8,width:'100%'}}><span style={{fontWeight:700}}>Voice / Audio (optional)</span><input type="file" accept="audio/*,video/*" onChange={e=>setVoice(e.target.files?.[0]||null)}/><small>{voice?`Selected: ${voice.name}`:'Phone voice recorder-ல் Tamil narration record செய்து இங்கே select பண்ணலாம்.'}</small></label><button className="secondary" type="button" disabled={exporting} onClick={exportVideo}>{exporting?'Rendering…':'Export Professional Promo'}</button>{status&&<div className="generationStatus">{status}</div>}</div>;
+  return <div className="browserExportBox">
+    <div>
+      <strong>Professional app promo + Auto Z Voice</strong>
+      <p>Phone motion, UI zoom/pan, tap highlight, clean transitions. Narration தானாக உருவாகி bold Tamil male Z Voice-ல் final videoக்குள் வரும்.</p>
+      <small>First export மட்டும் voice model download ஆகும்; பிறகு browser cache-ல் reuse ஆகும்.</small>
+    </div>
+    <button className="secondary" type="button" disabled={exporting} onClick={exportVideo}>{exporting?'Rendering + Voice…':'Export Promo with Auto Z Voice'}</button>
+    {status&&<div className="generationStatus">{status}</div>}
+  </div>;
 }
