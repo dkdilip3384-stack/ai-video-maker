@@ -3,6 +3,13 @@
 import { ChangeEvent, useMemo, useState } from 'react';
 import { buildStoryboard, StoryboardProject, VideoMode } from '../lib/storyboard';
 
+type GenerationState = {
+  loading: boolean;
+  message: string;
+  jobId?: string;
+  outputUrl?: string;
+};
+
 export default function HomePage() {
   const [mode, setMode] = useState<VideoMode>('promo');
   const [prompt, setPrompt] = useState('');
@@ -11,6 +18,7 @@ export default function HomePage() {
   const [duration, setDuration] = useState(30);
   const [assets, setAssets] = useState<File[]>([]);
   const [project, setProject] = useState<StoryboardProject | null>(null);
+  const [generation, setGeneration] = useState<GenerationState>({ loading: false, message: '' });
 
   const assetSummary = useMemo(() => {
     if (!assets.length) return 'No assets added yet';
@@ -24,6 +32,7 @@ export default function HomePage() {
   function generateProject() {
     const result = buildStoryboard({ prompt, mode, language, format, duration });
     setProject(result);
+    setGeneration({ loading: false, message: '' });
     setTimeout(() => document.getElementById('storyboard')?.scrollIntoView({ behavior: 'smooth' }), 50);
   }
 
@@ -43,10 +52,65 @@ export default function HomePage() {
     URL.revokeObjectURL(url);
   }
 
+  async function generateMovingVideo() {
+    if (!project) return;
+    setGeneration({ loading: true, message: 'Starting moving-video generation…' });
+
+    const providerProject = {
+      id: `project-${Date.now()}`,
+      mode: project.mode,
+      format: project.format,
+      language: project.language,
+      title: project.title,
+      scenes: project.scenes.map((scene) => ({
+        id: scene.id,
+        title: scene.title,
+        durationSeconds: scene.duration,
+        visualPrompt: scene.visualPrompt,
+        camera: scene.camera,
+        voiceText: scene.narration,
+        transition: scene.transition,
+      })),
+    };
+
+    try {
+      const response = await fetch('/api/video/generate', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ project: providerProject }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        const providerMissing = data?.status === 'not_configured' || response.status === 503;
+        setGeneration({
+          loading: false,
+          message: providerMissing
+            ? 'Video engine connection is ready in the app, but the GPU video provider is not connected yet.'
+            : data?.error || 'Video generation could not start.',
+          jobId: data?.id,
+        });
+        return;
+      }
+
+      setGeneration({
+        loading: false,
+        message: `Generation started: ${data.status || 'queued'}`,
+        jobId: data.id,
+        outputUrl: data.outputUrl,
+      });
+    } catch (error) {
+      setGeneration({
+        loading: false,
+        message: error instanceof Error ? error.message : 'Video generation could not start.',
+      });
+    }
+  }
+
   return (
     <main className="shell">
       <section className="hero">
-        <div className="badge">AI VIDEO MAKER • BUILD 01</div>
+        <div className="badge">AI VIDEO MAKER • BUILD 02</div>
         <h1>Story to real moving video</h1>
         <p>
           Build a proper motion-video project from your story, logo, app screens and references.
@@ -173,8 +237,16 @@ export default function HomePage() {
             ))}
           </div>
 
-          <div className="nextEngine">
-            <strong>Next engine:</strong> each scene will be sent to a motion-video backend, then voice, subtitles and music will be assembled into the final MP4.
+          <div className="generationBox">
+            <div>
+              <strong>Moving-video engine</strong>
+              <p>Send every scene to the connected GPU video provider and begin real motion generation.</p>
+            </div>
+            <button className="primary" type="button" disabled={generation.loading} onClick={generateMovingVideo}>
+              {generation.loading ? 'Starting…' : 'Generate Moving Video'}
+            </button>
+            {generation.message && <div className="generationStatus">{generation.message}</div>}
+            {generation.outputUrl && <a className="secondaryLink" href={generation.outputUrl}>Open generated video</a>}
           </div>
         </section>
       )}
