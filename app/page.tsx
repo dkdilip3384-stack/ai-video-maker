@@ -89,7 +89,15 @@ export default function HomePage() {
       setGeneration({ loading: true, message: `Uploading asset ${index + 1}/${assets.length}: ${file.name}`, progress: Math.round((index / Math.max(1, assets.length)) * 15) });
       const signResponse = await fetch('/api/assets/sign-upload', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: file.name, projectId }) });
       const signed = await signResponse.json();
-      if (!signResponse.ok) throw new Error(signed?.error || 'Unable to prepare asset upload.');
+
+      if (!signResponse.ok) {
+        if (signResponse.status === 503 || signed?.status === 'not_configured') {
+          setGeneration({ loading: true, message: 'Cloud asset storage is not connected yet. Continuing without remote reference uploads…', progress: 10 });
+          return [] as UploadedAsset[];
+        }
+        throw new Error(signed?.error || 'Unable to prepare asset upload.');
+      }
+
       const uploadResponse = await fetch(signed.uploadUrl, { method: 'PUT', headers: { 'content-type': file.type || 'application/octet-stream' }, body: file });
       if (!uploadResponse.ok) {
         const text = await uploadResponse.text();
@@ -141,7 +149,7 @@ export default function HomePage() {
       const data = (await response.json()) as ProviderJob;
       if (!response.ok) {
         const providerMissing = data?.status === 'not_configured' || response.status === 503;
-        setGeneration({ loading: false, message: providerMissing ? 'Video engine connection is ready in the app, but the GPU video provider is not connected yet.' : data?.error || 'Video generation could not start.', jobId: data?.id, progress: data?.progress || 0 });
+        setGeneration({ loading: false, message: providerMissing ? 'Live animated preview is ready. Full AI scene generation will unlock when the GPU video provider is connected.' : data?.error || 'Video generation could not start.', jobId: data?.id, progress: data?.progress || 0 });
         return;
       }
       setGeneration({ loading: true, message: 'GPU job queued…', jobId: data.id, progress: Math.max(15, data.progress || 0) });
@@ -153,7 +161,7 @@ export default function HomePage() {
 
   return (
     <main className="shell">
-      <section className="hero"><div className="badge">AI VIDEO MAKER • BUILD 06</div><h1>Story to real moving video</h1><p>Build a proper motion-video project from your story, logo, app screens and references. The goal is cinematic motion and professional promo editing — not a photo slideshow.</p></section>
+      <section className="hero"><div className="badge">AI VIDEO MAKER • BUILD 07</div><h1>Story to real moving video</h1><p>Build a proper motion-video project from your story, logo, app screens and references. The goal is cinematic motion and professional promo editing — not a photo slideshow.</p></section>
       <SystemReadiness />
       <section className="modeGrid"><button className={mode === 'promo' ? 'mode active' : 'mode'} onClick={() => setMode('promo')}><span className="modeTitle">Promo Mode</span><span>Logo + screens + features → animated commercial</span></button><button className={mode === 'film' ? 'mode active' : 'mode'} onClick={() => setMode('film')}><span className="modeTitle">AI Film Mode</span><span>Story → cinematic scenes + voice + subtitles + music</span></button></section>
       <section className="panel"><label>Story / Prompt<textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder={mode === 'promo' ? 'Example: Create a 30-second Tamil promo for Z-KANAKKU. Start with roommates confused about expenses, reveal the app, show adding an expense, balances and settlement, then end with the logo.' : 'Example: A delivery rider finishes a long rainy day. He reaches home tired, sees his mother waiting, and gives her the medicine he bought on the way.'} /></label><div className="threeCol"><label>Language<select value={language} onChange={(e) => setLanguage(e.target.value)}><option value="ta">Tamil</option><option value="en">English</option><option value="mix">Tamil + English</option></select></label><label>Format<select value={format} onChange={(e) => setFormat(e.target.value)}><option>9:16</option><option>16:9</option><option>1:1</option></select></label><label>Duration<select value={duration} onChange={(e) => setDuration(Number(e.target.value))}><option value={15}>15 sec</option><option value={30}>30 sec</option><option value={45}>45 sec</option><option value={60}>60 sec</option></select></label></div><label>Assets<input type="file" multiple accept="image/*,video/*" onChange={handleFiles} /><small>{assetSummary}. Add logo, screenshots, screen recordings, character references or source clips.</small></label>{assets.length > 0 && <div className="assetList">{assets.map((file) => { const uploaded = uploadedAssets.some((item) => item.name === file.name && item.size === file.size); return <div className="assetChip" key={`${file.name}-${file.size}`}><span>{uploaded ? 'UPLOADED' : file.type.startsWith('video/') ? 'VIDEO' : 'IMAGE'}</span>{file.name}</div>; })}</div>}<button className="primary" type="button" onClick={generateProject}>Build Scene Plan</button></section>
