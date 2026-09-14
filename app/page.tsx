@@ -8,7 +8,18 @@ type GenerationState = {
   message: string;
   jobId?: string;
   outputUrl?: string;
+  progress?: number;
 };
+
+type ProviderJob = {
+  id: string;
+  status: 'queued' | 'processing' | 'completed' | 'failed' | 'not_configured';
+  progress?: number;
+  outputUrl?: string;
+  error?: string;
+};
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export default function HomePage() {
   const [mode, setMode] = useState<VideoMode>('promo');
@@ -52,9 +63,52 @@ export default function HomePage() {
     URL.revokeObjectURL(url);
   }
 
+  async function pollJob(jobId: string) {
+    for (let attempt = 0; attempt < 360; attempt += 1) {
+      await wait(5000);
+      const response = await fetch(`/api/video/status?jobId=${encodeURIComponent(jobId)}`, { cache: 'no-store' });
+      const job = (await response.json()) as ProviderJob;
+
+      if (!response.ok && job.status !== 'not_configured') {
+        throw new Error(job.error || 'Unable to read generation status.');
+      }
+
+      const progress = Math.max(0, Math.min(100, job.progress || 0));
+      if (job.status === 'completed') {
+        setGeneration({
+          loading: false,
+          message: 'Moving video generated successfully.',
+          jobId,
+          progress: 100,
+          outputUrl: job.outputUrl,
+        });
+        return;
+      }
+
+      if (job.status === 'failed' || job.status === 'not_configured') {
+        setGeneration({
+          loading: false,
+          message: job.error || (job.status === 'not_configured' ? 'GPU video provider is not connected yet.' : 'Generation failed.'),
+          jobId,
+          progress,
+        });
+        return;
+      }
+
+      setGeneration({
+        loading: true,
+        message: job.status === 'queued' ? 'Waiting for GPU…' : `Generating moving video… ${progress}%`,
+        jobId,
+        progress,
+      });
+    }
+
+    setGeneration({ loading: false, message: 'Generation is still running. Try checking the job again later.', jobId });
+  }
+
   async function generateMovingVideo() {
     if (!project) return;
-    setGeneration({ loading: true, message: 'Starting moving-video generation…' });
+    setGeneration({ loading: true, message: 'Starting moving-video generation…', progress: 0 });
 
     const providerProject = {
       id: `project-${Date.now()}`,
@@ -79,7 +133,7 @@ export default function HomePage() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ project: providerProject }),
       });
-      const data = await response.json();
+      const data = (await response.json()) as ProviderJob;
 
       if (!response.ok) {
         const providerMissing = data?.status === 'not_configured' || response.status === 503;
@@ -89,16 +143,13 @@ export default function HomePage() {
             ? 'Video engine connection is ready in the app, but the GPU video provider is not connected yet.'
             : data?.error || 'Video generation could not start.',
           jobId: data?.id,
+          progress: data?.progress || 0,
         });
         return;
       }
 
-      setGeneration({
-        loading: false,
-        message: `Generation started: ${data.status || 'queued'}`,
-        jobId: data.id,
-        outputUrl: data.outputUrl,
-      });
+      setGeneration({ loading: true, message: 'GPU job queued…', jobId: data.id, progress: data.progress || 0 });
+      await pollJob(data.id);
     } catch (error) {
       setGeneration({
         loading: false,
@@ -110,7 +161,7 @@ export default function HomePage() {
   return (
     <main className="shell">
       <section className="hero">
-        <div className="badge">AI VIDEO MAKER • BUILD 02</div>
+        <div className="badge">AI VIDEO MAKER • BUILD 03</div>
         <h1>Story to real moving video</h1>
         <p>
           Build a proper motion-video project from your story, logo, app screens and references.
@@ -240,13 +291,16 @@ export default function HomePage() {
           <div className="generationBox">
             <div>
               <strong>Moving-video engine</strong>
-              <p>Send every scene to the connected GPU video provider and begin real motion generation.</p>
+              <p>Send the scene to the connected GPU video provider and follow generation progress automatically.</p>
             </div>
             <button className="primary" type="button" disabled={generation.loading} onClick={generateMovingVideo}>
-              {generation.loading ? 'Starting…' : 'Generate Moving Video'}
+              {generation.loading ? 'Generating…' : 'Generate Moving Video'}
             </button>
             {generation.message && <div className="generationStatus">{generation.message}</div>}
-            {generation.outputUrl && <a className="secondaryLink" href={generation.outputUrl}>Open generated video</a>}
+            {typeof generation.progress === 'number' && generation.loading && (
+              <div className="progressTrack"><div className="progressFill" style={{ width: `${generation.progress}%` }} /></div>
+            )}
+            {generation.outputUrl && <a className="secondaryLink" href={generation.outputUrl} target="_blank" rel="noreferrer">Open generated video</a>}
           </div>
         </section>
       )}
