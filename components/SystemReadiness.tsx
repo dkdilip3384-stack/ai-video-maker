@@ -4,10 +4,7 @@ import { useEffect, useState } from 'react';
 
 type Health = {
   ok?: boolean;
-  videoProviderConfigured?: boolean;
-  voiceProviderConfigured?: boolean;
   assetStorageConfigured?: boolean;
-  musicConfigured?: boolean;
 };
 
 export default function SystemReadiness() {
@@ -27,29 +24,29 @@ export default function SystemReadiness() {
   }, []);
 
   const items = [
-    ['Web app', true],
-    ['Video GPU', Boolean(health?.videoProviderConfigured)],
-    ['Tamil / English voice', Boolean(health?.voiceProviderConfigured)],
-    ['Asset storage', Boolean(health?.assetStorageConfigured)],
-    ['Background music', Boolean(health?.musicConfigured)],
+    ['Web app', true, 'Ready'],
+    ['Motion preview', true, 'Ready'],
+    ['Browser video export', true, 'Free'],
+    ['Asset storage', Boolean(health?.assetStorageConfigured), health?.assetStorageConfigured ? 'Ready' : 'Browser-only'],
+    ['AI Film', false, 'Future optional'],
   ] as const;
 
   return (
     <section className="readiness">
       <div>
-        <div className="badge">SYSTEM READINESS</div>
-        <h2>Connection status</h2>
-        <p>Green items are ready. Missing external services stay visible here instead of failing silently.</p>
+        <div className="badge">FREE WORKFLOW</div>
+        <h2>Ready without paid GPU</h2>
+        <p>Promo creation, moving preview and browser video export work without a paid AI video service.</p>
       </div>
       <div className="readinessGrid">
-        {items.map(([label, ready]) => (
-          <div className={`readyItem ${ready ? 'ready' : 'missing'}`} key={label}>
-            <span>{ready ? '✓' : '!'}</span>
-            <div><strong>{label}</strong><small>{ready ? 'Ready' : 'Needs connection'}</small></div>
+        {items.map(([label, ready, detail]) => (
+          <div className={`readyItem ${ready ? 'ready' : 'optional'}`} key={label}>
+            <span>{ready ? '✓' : '·'}</span>
+            <div><strong>{label}</strong><small>{detail}</small></div>
           </div>
         ))}
       </div>
-      {error && <small className="healthError">{error}</small>}
+      {error && <small className="healthError">Status check unavailable. Free browser tools still work.</small>}
     </section>
   );
 }
